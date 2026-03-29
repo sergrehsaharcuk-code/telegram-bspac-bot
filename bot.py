@@ -712,6 +712,7 @@ def get_dates_to_check():
     return dates
 
 def send_final_updates():
+    """Отправляет сообщения 'нет замен' в 17:20 для групп, у которых не было замен"""
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Финальная рассылка...")
     users = load_users()
     dates_to_check = get_dates_to_check()
@@ -754,20 +755,15 @@ def send_final_updates():
 
 # ===== ПЛАНИРОВЩИКИ =====
 def monitor_updates():
+    """Мониторинг сайта КРУГЛОСУТОЧНО (без ограничения по времени)"""
     while True:
         now = datetime.now()
-        if 8 <= now.hour < 17 or (now.hour == 17 and now.minute < 20):
-            check_and_notify_new_replacements()
-            time.sleep(900)
-        else:
-            next_check = now.replace(hour=8, minute=0, second=0, microsecond=0)
-            if now.hour >= 17:
-                next_check += timedelta(days=1)
-            sleep_seconds = (next_check - now).total_seconds()
-            print(f"💤 Мониторинг спит до {next_check.strftime('%Y-%m-%d %H:%M')}")
-            time.sleep(max(sleep_seconds, 60))
+        # Мониторим круглосуточно
+        check_and_notify_new_replacements()
+        time.sleep(900)  # каждые 15 минут
 
 def final_scheduler():
+    """Запускает финальную рассылку в 17:20"""
     while True:
         now = datetime.now()
         target = now.replace(hour=17, minute=20, second=0, microsecond=0)
@@ -1276,10 +1272,12 @@ def handle_text(message):
 if __name__ == "__main__":
     print("Бот запущен...")
     
+    # Запускаем мониторинг (круглосуточно, каждые 15 минут)
     monitor_thread = threading.Thread(target=monitor_updates)
     monitor_thread.daemon = True
     monitor_thread.start()
     
+    # Запускаем планировщик финальной рассылки (в 17:20)
     final_thread = threading.Thread(target=final_scheduler)
     final_thread.daemon = True
     final_thread.start()

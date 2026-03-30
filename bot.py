@@ -598,6 +598,16 @@ def check_and_notify_new_replacements():
             if not reps:
                 continue
             
+            # Проверка даты: не отправляем, если дата в заголовке уже прошла
+            if date_str:
+                try:
+                    header_date = datetime.strptime(date_str, "%d.%m.%Y").date()
+                    if header_date < date.today():
+                        print(f"   ⏭️ Пропускаем {day_name}: дата {date_str} уже прошла")
+                        continue
+                except:
+                    pass
+            
             url = DAY_URLS[day_name.lower()]
             current_hash = get_tables_hash(url)
             if not current_hash:
@@ -755,12 +765,10 @@ def send_final_updates():
 
 # ===== ПЛАНИРОВЩИКИ =====
 def monitor_updates():
-    """Мониторинг сайта КРУГЛОСУТОЧНО (без ограничения по времени)"""
+    """Мониторинг сайта КРУГЛОСУТОЧНО (каждые 15 минут)"""
     while True:
-        now = datetime.now()
-        # Мониторим круглосуточно
         check_and_notify_new_replacements()
-        time.sleep(900)  # каждые 15 минут
+        time.sleep(900)  # 15 минут
 
 def final_scheduler():
     """Запускает финальную рассылку в 17:20"""

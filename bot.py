@@ -20,11 +20,15 @@ bot = telebot.TeleBot(TOKEN)
 BASE_URL = "http://bspc.bstu.by/ru/"
 ZVONKI_URL = urljoin(BASE_URL, "uchashchimsya/raspisanie-zvonkov")
 
-USERS_FILE = "users.json"
-LAST_SENT_FILE = "last_sent.json"
-PAID_FILE = "paid_users.json"
-PAGE_STATE_FILE = "page_state.json"
-user_states = {}
+# ===== ПОСТОЯННОЕ ХРАНИЛИЩЕ =====
+DATA_DIR = "/app/data"
+os.makedirs(DATA_DIR, exist_ok=True)
+
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
+LAST_SENT_FILE = os.path.join(DATA_DIR, "last_sent.json")
+PAID_FILE = os.path.join(DATA_DIR, "paid_users.json")
+PAGE_STATE_FILE = os.path.join(DATA_DIR, "page_state.json")
+NOTIFIED_FILE = os.path.join(DATA_DIR, "notified_groups.json")
 
 # ===== ПЛАТЁЖНАЯ СИСТЕМА =====
 SPECIAL_USERS = []

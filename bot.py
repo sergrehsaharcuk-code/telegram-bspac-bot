@@ -29,6 +29,7 @@ LAST_SENT_FILE = os.path.join(DATA_DIR, "last_sent.json")
 PAID_FILE = os.path.join(DATA_DIR, "paid_users.json")
 PAGE_STATE_FILE = os.path.join(DATA_DIR, "page_state.json")
 NOTIFIED_FILE = os.path.join(DATA_DIR, "notified_groups.json")
+user_states = {}
 
 # ===== ПЛАТЁЖНАЯ СИСТЕМА =====
 SPECIAL_USERS = []
@@ -522,20 +523,22 @@ def get_current_page_state():
     today = date.today().strftime("%Y-%m-%d")
     return state.get(today, {})
 
-def update_page_state(day_name, page_hash, groups):
+def update_page_state(day_name, page_hash, groups_data):
     state = load_page_state()
     today = date.today().strftime("%Y-%m-%d")
     if today not in state:
         state[today] = {}
     state[today][day_name] = {
         "hash": page_hash,
-        "groups": groups
+        "groups": groups_data
     }
     save_page_state(state)
 
-# ===== ФУНКЦИИ ДЛЯ РАБОТЫ С УВЕДОМЛЕНИЯМИ =====
-NOTIFIED_FILE = "notified_groups.json"
+def get_page_groups_data(day_name):
+    state = get_current_page_state()
+    return state.get(day_name, {}).get("groups", {})
 
+# ===== ФУНКЦИИ ДЛЯ РАБОТЫ С УВЕДОМЛЕНИЯМИ =====
 def load_notified():
     if os.path.exists(NOTIFIED_FILE):
         try:
@@ -578,17 +581,67 @@ def is_group_notified_for_date(group, date_obj):
         return group_data.get(date_str, False)
     return False
 
-def extract_groups_from_reps(reps):
-    groups = set()
+# ===== НОВАЯ ФУНКЦИЯ: ИЗВЛЕЧЕНИЕ ГРУПП С ХЕШАМИ ЗАМЕН =====
+def extract_groups_with_hashes(reps):
+    groups_data = {}
     for rep in reps:
+        # Определяем группу
+        group = None
         for key, value in rep.items():
             if 'групп' in key.lower():
                 for g in re.split(r'[,/ ]+', value.upper()):
                     g = g.strip()
                     if g in SCHEDULE_LINKS:
-                        groups.add(g)
+                        group = g
+                        break
+            if group:
                 break
-    return list(groups)
+        
+        if not group:
+            for val in rep.values():
+                for g in re.split(r'[,/ ]+', val.upper()):
+                    g = g.strip()
+                    if g in SCHEDULE_LINKS:
+                        group = g
+                        break
+                if group:
+                    break
+        
+        if not group:
+            continue
+        
+        # Создаём уникальную строку для хеша этой замены
+        rep_str = ''
+        for key, value in rep.items():
+            rep_str += f"{key}:{value}|"
+        
+        rep_hash = hashlib.md5(rep_str.encode('utf-8')).hexdigest()
+        
+        # Если для этой группы уже есть хеш, объединяем
+        if group in groups_data:
+            groups_data[group] += rep_hash
+        else:
+            groups_data[group] = rep_hash
+    
+    # Финальный хеш для каждой группы
+    result = {}
+    for group, hashes in groups_data.items():
+        result[group] = hashlib.md5(hashes.encode('utf-8')).hexdigest()
+    
+    return result
+
+# ===== ФУНКЦИЯ ОТПРАВКИ СООБЩЕНИЯ ГРУППЕ =====
+def send_to_group(group, message):
+    users = load_users()
+    for uid_str, data in users.items():
+        if data.get("group") == group:
+            uid = int(uid_str)
+            try:
+                bot.send_message(uid, message)
+                print(f"      ✅ Отправлено пользователю {uid}")
+                time.sleep(0.1)
+            except Exception as e:
+                print(f"      ❌ Ошибка отправки {uid}: {e}")
 
 # ===== ОСНОВНАЯ ФУНКЦИЯ ПРОВЕРКИ И ОТПРАВКИ =====
 def check_and_notify_new_replacements():
@@ -602,7 +655,7 @@ def check_and_notify_new_replacements():
             if not reps:
                 continue
             
-            # Проверка даты: не отправляем, если дата в заголовке уже прошла
+            # Проверка даты
             if date_str:
                 try:
                     header_date = datetime.strptime(date_str, "%d.%m.%Y").date()
@@ -613,74 +666,54 @@ def check_and_notify_new_replacements():
                     pass
             
             url = DAY_URLS[day_name.lower()]
-            current_hash = get_tables_hash(url)
-            if not current_hash:
+            current_page_hash = get_tables_hash(url)
+            if not current_page_hash:
                 continue
             
-            current_groups = extract_groups_from_reps(reps)
-            prev_state = current_state.get(day_name.lower(), {})
-            prev_hash = prev_state.get("hash")
-            prev_groups = set(prev_state.get("groups", []))
-            current_groups_set = set(current_groups)
+            # Получаем текущие данные по группам
+            current_groups_data = extract_groups_with_hashes(reps)
+            current_groups_set = set(current_groups_data.keys())
             
-            if prev_hash == current_hash:
+            # Получаем предыдущие данные
+            prev_groups_data = get_page_groups_data(day_name.lower())
+            prev_groups_set = set(prev_groups_data.keys())
+            
+            # Если общий хеш не изменился и группы не изменились — пропускаем
+            if current_page_hash == current_state.get(day_name.lower(), {}).get("hash") and current_groups_set == prev_groups_set:
                 continue
             
             print(f"  🔄 Изменение на странице {day_name}!")
             
-            new_groups = current_groups_set - prev_groups
+            # 1. Новые группы
+            new_groups = current_groups_set - prev_groups_set
             for group in new_groups:
                 print(f"    ➕ Новые замены для группы {group}")
                 filtered = filter_replacements_by_group(reps, group)
                 if filtered:
                     answer = format_replacements(filtered, group, day_name, date_str)
-                    users = load_users()
-                    for uid_str, data in users.items():
-                        if data.get("group") == group:
-                            uid = int(uid_str)
-                            try:
-                                bot.send_message(uid, answer)
-                                print(f"      ✅ Отправлено пользователю {uid}")
-                                time.sleep(0.1)
-                            except Exception as e:
-                                print(f"      ❌ Ошибка отправки {uid}: {e}")
+                    send_to_group(group, answer)
                     mark_group_notified_for_date(group, d)
             
-            common_groups = current_groups_set & prev_groups
-            if common_groups and prev_hash != current_hash:
-                for group in common_groups:
+            # 2. Группы, у которых изменились замены
+            common_groups = current_groups_set & prev_groups_set
+            for group in common_groups:
+                if current_groups_data.get(group) != prev_groups_data.get(group):
                     print(f"    🔄 Обновлённые замены для группы {group}")
                     filtered = filter_replacements_by_group(reps, group)
                     if filtered:
                         answer = format_replacements(filtered, group, day_name, date_str)
-                        users = load_users()
-                        for uid_str, data in users.items():
-                            if data.get("group") == group:
-                                uid = int(uid_str)
-                                try:
-                                    bot.send_message(uid, answer)
-                                    print(f"      ✅ Отправлено пользователю {uid}")
-                                    time.sleep(0.1)
-                                except Exception as e:
-                                    print(f"      ❌ Ошибка отправки {uid}: {e}")
+                        send_to_group(group, answer)
                         mark_group_notified_for_date(group, d)
             
-            removed_groups = prev_groups - current_groups_set
+            # 3. Удалённые группы
+            removed_groups = prev_groups_set - current_groups_set
             for group in removed_groups:
                 print(f"    ➖ Отменены замены для группы {group}")
                 answer = f"🔄 ОТМЕНА: замены на {day_name} {date_str} для группы {group} больше не актуальны."
-                users = load_users()
-                for uid_str, data in users.items():
-                    if data.get("group") == group:
-                        uid = int(uid_str)
-                        try:
-                            bot.send_message(uid, answer)
-                            print(f"      ✅ Отправлено пользователю {uid}")
-                            time.sleep(0.1)
-                        except Exception as e:
-                            print(f"      ❌ Ошибка отправки {uid}: {e}")
+                send_to_group(group, answer)
             
-            update_page_state(day_name.lower(), current_hash, current_groups)
+            # Обновляем состояние
+            update_page_state(day_name.lower(), current_page_hash, current_groups_data)
         
         print(f"  ✅ Проверка завершена")
     except Exception as e:
@@ -726,15 +759,16 @@ def get_dates_to_check():
     return dates
 
 def send_final_updates():
-    """Отправляет сообщения 'нет замен' в 17:20 для групп, у которых не было замен"""
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Финальная рассылка...")
     users = load_users()
     dates_to_check = get_dates_to_check()
     state = get_current_page_state()
     
+    # Собираем все группы, которые были в таблицах сегодня
     all_groups_in_tables = set()
     for day_name, data in state.items():
-        all_groups_in_tables.update(data.get("groups", []))
+        groups_data = data.get("groups", {})
+        all_groups_in_tables.update(groups_data.keys())
     
     groups_users = {}
     for uid_str, data in users.items():
@@ -769,13 +803,11 @@ def send_final_updates():
 
 # ===== ПЛАНИРОВЩИКИ =====
 def monitor_updates():
-    """Мониторинг сайта КРУГЛОСУТОЧНО (каждые 15 минут)"""
     while True:
         check_and_notify_new_replacements()
-        time.sleep(900)  # 15 минут
+        time.sleep(900)
 
 def final_scheduler():
-    """Запускает финальную рассылку в 17:20"""
     while True:
         now = datetime.now()
         target = now.replace(hour=17, minute=20, second=0, microsecond=0)
@@ -1284,12 +1316,10 @@ def handle_text(message):
 if __name__ == "__main__":
     print("Бот запущен...")
     
-    # Запускаем мониторинг (круглосуточно, каждые 15 минут)
     monitor_thread = threading.Thread(target=monitor_updates)
     monitor_thread.daemon = True
     monitor_thread.start()
     
-    # Запускаем планировщик финальной рассылки (в 17:20)
     final_thread = threading.Thread(target=final_scheduler)
     final_thread.daemon = True
     final_thread.start()
